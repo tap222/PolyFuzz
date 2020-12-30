@@ -17,7 +17,7 @@ def cosine_similarity(from_vector: np.ndarray,
                       from_list: List[str],
                       to_list: List[str],
                       nbest,
-                      min_similarity: float = 0.75,
+                      min_similarity: float = 0,
                       method: str = "sparse") -> pd.DataFrame:
     """ Calculate similarity between two matrices/vectors and return best matches
 
@@ -53,7 +53,9 @@ def cosine_similarity(from_vector: np.ndarray,
     if nbest != None:
         if int(nbest) >  len(to_list):
             raise ValueError('best choice must be less than to_list')
-            
+    else:
+        nbest = int(1)
+        
     # Slower but uses less memory
     if method == "knn":
 
@@ -79,45 +81,50 @@ def cosine_similarity(from_vector: np.ndarray,
         # There is a bug with awesome_cossim_topn that when to_vector and from_vector
         # have the same shape, setting topn to 1 does not work. Apparently, you need
         # to it at least to 2 for it to work
-        similarity_matrix = awesome_cossim_topn(from_vector, to_vector.T, 2, min_similarity)
-
+        if int(nbest) <= 1:
+            similarity_matrix = awesome_cossim_topn(from_vector, to_vector.T, 2, min_similarity)
+        elif int(nbest) > 1:
+            similarity_matrix = awesome_cossim_topn(from_vector, to_vector.T, nbest, min_similarity)
+            
         if from_list == to_list:
             similarity_matrix = similarity_matrix.tolil()
             similarity_matrix.setdiag(0.)
             similarity_matrix = similarity_matrix.tocsr()
-
-        indices = np.array(similarity_matrix.argmax(axis=1).T).flatten()
-        similarity = similarity_matrix.max(axis=1).toarray().T.flatten()
-
+        
+        if int(nbest) <= 1 and method == "sparse":
+            indices = np.array(similarity_matrix.argmax(axis=1).T).flatten()
+            similarity = similarity_matrix.max(axis=1).toarray().T.flatten()
+        elif int(nbest) > 1 and method == "sparse":
+            similarity = np.take_along_axis(similarity_matrix.toarray(), np.argsort(similarity_matrix.toarray(), axis =1), axis=1) [:,-nbest:]
+            indices = np.argsort(np.array(similarity_matrix.toarray()), axis =1)[:,-nbest:]
+            
     # Faster than knn and slower than sparse but uses more memory
     else:
         similarity_matrix = scikit_cosine_similarity(from_vector, to_vector)
 
         if from_list == to_list:
             np.fill_diagonal(similarity_matrix, 0)
-        if nbest == None and method == "sparse":
-            indices = similarity_matrix.argmax(axis=1)
-            similarity = similarity_matrix.max(axis=1)
-        elif nbest != None and method == "sparse":
-            similarity = np.take_along_axis(similarity_matrix.toarray(), np.argsort(similarity_matrix.toarray(), axis =1), axis=1) [:,-nbest:]
-            indices = np.argsort(np.array(similarity_matrix.toarray()), axis =1)[:,-nbest:]            
+
+        indices = similarity_matrix.argmax(axis=1)
+        similarity = similarity_matrix.max(axis=1)
 
     # Convert results to df
-    if nbest == None:    
+    if int(nbest) <= 1:
         matches = [to_list[idx] for idx in indices.flatten()]
         matches = pd.DataFrame(np.vstack((from_list, matches, similarity)).T, columns=["From", "To", "Similarity"])
         matches.Similarity = matches.Similarity.astype(float)
         matches.loc[matches.Similarity < 0.001, "To"] = None
     else:
         matches = [np.array([to_list[idx] for idx in l]) for l in indices] ##In progress
-        column = ["To"]
+        column = []
         for i in range(nbest - 1):
-            column.append("BestMatch" + "__" + str(i))
-        column.append("Similarity")
+            column.append("BestMatch" + "__" + str(nbest - 1 - i))
+        column.append("To")
         for j in range(nbest - 1):
-            column.append("Similarity" + "__" + str(j))
+            column.append("Similarity" + "__" + str(nbest - 1 - j))
+        column.append("Similarity")
         matches = pd.concat([pd.DataFrame({'From' : from_list}), pd.DataFrame(np.hstack((matches, similarity)), columns= column)], axis =1)
-        matches.Similarity = matches.Similarity.astype(float)
-        matches.loc[matches.Similarity < 0.001, "To"] = None        
-
+        # matches.Similarity = matches.Similarity.astype(float)
+        # matches.loc[matches.Similarity < 0.001, "To"] = None
+        
     return matches
